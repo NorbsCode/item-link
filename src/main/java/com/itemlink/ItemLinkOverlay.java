@@ -38,7 +38,7 @@ import net.runelite.api.Client;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.Point;
 import net.runelite.api.widgets.Widget;
-import net.runelite.api.widgets.WidgetInfo;
+import net.runelite.api.widgets.ComponentID;
 import net.runelite.client.game.ItemEquipmentStats;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.ItemStats;
@@ -235,11 +235,11 @@ public class ItemLinkOverlay extends Overlay
 			if (found != null) return found;
 		}
 
-		// Try standard WidgetInfo entries as fallback
-		found = checkWidgetChildren(client.getWidget(WidgetInfo.CHATBOX_MESSAGE_LINES), mousePos);
+		// Try standard ComponentID entries as fallback
+		found = checkWidgetChildren(client.getWidget(ComponentID.CHATBOX_MESSAGE_LINES), mousePos);
 		if (found != null) return found;
 
-		found = checkWidgetChildren(client.getWidget(WidgetInfo.CHATBOX_TRANSPARENT_LINES), mousePos);
+		found = checkWidgetChildren(client.getWidget(ComponentID.CHATBOX_TRANSPARENT_LINES), mousePos);
 		if (found != null) return found;
 
 		// Last resort: search all children of chatbox groups

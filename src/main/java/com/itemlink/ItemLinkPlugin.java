@@ -43,7 +43,7 @@ import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.OverheadTextChanged;
 import net.runelite.api.events.ScriptCallbackEvent;
 import net.runelite.api.widgets.Widget;
-import net.runelite.api.widgets.WidgetInfo;
+import net.runelite.api.widgets.ComponentID;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -166,7 +166,7 @@ public class ItemLinkPlugin extends Plugin
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
-		Widget chatboxInput = client.getWidget(WidgetInfo.CHATBOX_INPUT);
+		Widget chatboxInput = client.getWidget(ComponentID.CHATBOX_INPUT);
 		if (chatboxInput == null || chatboxInput.isHidden())
 		{
 			return;
@@ -397,7 +397,7 @@ public class ItemLinkPlugin extends Plugin
 		clientThread.invokeLater(() ->
 		{
 			// Check if chatbox is already open for typing
-			Widget chatboxInput = client.getWidget(WidgetInfo.CHATBOX_INPUT);
+			Widget chatboxInput = client.getWidget(ComponentID.CHATBOX_INPUT);
 			if (chatboxInput == null || chatboxInput.isHidden())
 			{
 				// Try to open the chatbox by running the appropriate script
@@ -448,7 +448,7 @@ public class ItemLinkPlugin extends Plugin
 			client.setVarcStrValue(VarClientStr.CHATBOX_TYPED_TEXT, newText);
 
 			// Update the chatbox widget to reflect the change
-			Widget chatboxInput = client.getWidget(WidgetInfo.CHATBOX_INPUT);
+			Widget chatboxInput = client.getWidget(ComponentID.CHATBOX_INPUT);
 			if (chatboxInput != null)
 			{
 				chatboxInput.setText(newText + "*");
