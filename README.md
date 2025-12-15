@@ -30,7 +30,8 @@ Simply type naturally! The plugin automatically detects item names in your chat 
 - Type: `I just got an Abyssal whip!`
 - Shows as: `I just got an [Abyssal whip]!` (with color)
 
-<img width="524" height="289" alt="image" src="https://github.com/user-attachments/assets/56299a11-c2ac-48dc-a117-3388a146ec7c" />
+<img width="602" height="274" alt="image" src="https://github.com/user-attachments/assets/44a3fb0a-d733-4761-ba14-dcf37e3e8eeb" />
+
 
 - Type: `Selling Dragon scimitar for 100k`
 - Shows as: `Selling [Dragon scimitar] for 100k` (with color)
