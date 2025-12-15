@@ -31,7 +31,8 @@ A World of Warcraft-style item linking plugin for Old School RuneScape. Share it
 
 ## Screenshots
 
-<img width="549" height="206" alt="image" src="https://github.com/user-attachments/assets/73b34f0b-f1be-4d0e-aedc-7444ac944ad2" />
+<img width="524" height="289" alt="image" src="https://github.com/user-attachments/assets/56299a11-c2ac-48dc-a117-3388a146ec7c" />
+
 
 
 ## Installation
