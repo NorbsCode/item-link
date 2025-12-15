@@ -77,6 +77,11 @@ public class ItemLinkPlugin extends Plugin
 	private static final String COLOR_LEGENDARY = "ff8000";   // Orange
 	private static final String COLOR_DEFAULT = "ff8000";     // Orange (default)
 
+	// Default chat colors for restoration after item highlight
+	// These are used in transparent chatbox mode
+	private static final String COLOR_PUBLIC_CHAT = "9090ff";     // Light blue (public chat)
+	private static final String COLOR_FC_CHAT = "ef5050";         // Salmon red (friends/clan chat)
+
 	// Minimum item name length to avoid false positives
 	private static final int MIN_ITEM_NAME_LENGTH = 5;
 
@@ -299,7 +304,7 @@ public class ItemLinkPlugin extends Plugin
 				int itemId = itemNameToId.get(itemName);
 				String color = getItemColor(itemId);
 
-				result.append(String.format("<col=%s>[%s]</col>", color, originalName));
+				result.append(String.format("<col=%s>[%s]</col><col=%s>", color, originalName, COLOR_PUBLIC_CHAT));
 
 				// Add to overlay for tooltip
 				itemLinkOverlay.addRecentItem(itemId, 1);
