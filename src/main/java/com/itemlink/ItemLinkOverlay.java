@@ -82,7 +82,7 @@ public class ItemLinkOverlay extends Overlay
 		}
 	};
 
-	// Cache of item info by item name (for lookup when hovering)
+	// Cache of item info by item name (lowercase for case-insensitive lookup)
 	private final Map<String, ItemLinkInfo> itemsByName = new LinkedHashMap<String, ItemLinkInfo>()
 	{
 		@Override
@@ -148,7 +148,8 @@ public class ItemLinkOverlay extends Overlay
 			String quantityStr = matcher.group(2);
 			int quantity = quantityStr != null ? Integer.parseInt(quantityStr) : 1;
 
-			ItemLinkInfo info = itemsByName.get(itemName);
+			// Lookup using lowercase for case-insensitive matching
+			ItemLinkInfo info = itemsByName.get(itemName.toLowerCase());
 			if (info != null)
 			{
 				// Create copy with the correct quantity from this specific link
@@ -388,7 +389,7 @@ public class ItemLinkOverlay extends Overlay
 		}
 
 		recentItems.put(itemId, info);
-		itemsByName.put(itemName, info);
+		itemsByName.put(itemName.toLowerCase(), info);
 	}
 
 	private String formatStat(String name, int value)

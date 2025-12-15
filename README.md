@@ -1,10 +1,10 @@
 # Item Link Plugin for RuneLite
 
-A World of Warcraft-style item linking plugin for Old School RuneScape. Share items in chat with colored links that other plugin users can hover over to see detailed item information.
+A World of Warcraft-style item linking plugin for Old School RuneScape. Item names in chat are automatically highlighted with colored links that other plugin users can hover over to see detailed item information.
 
 ## Features
 
-- **Shift+Right-Click to Link**: Hold Shift and right-click any item in your inventory, equipment, or bank to add a "Link in chat" option
+- **Automatic Item Detection**: Just type item names naturally in chat - they'll be automatically highlighted!
 - **WoW-Style Rarity Colors**: Items are colored based on their GE value:
   - White: Under 10K
   - Green: 10K+
@@ -19,21 +19,45 @@ A World of Warcraft-style item linking plugin for Old School RuneScape. Share it
   - Equipment Slot
   - Weight
 - **Works Everywhere**: Public chat, friends chat, clan chat, private messages
-- **Live Preview**: See formatted item links while typing, before you send
 - **Overhead Text**: Item links are formatted in overhead speech bubbles too
+- **Case-Insensitive**: Works whether you type "Abyssal whip", "abyssal whip", or "ABYSSAL WHIP"
 
 ## How to Use
 
-1. Hold **Shift** and **right-click** any item
-2. Select **"Link in chat"**
-3. The item will be added to your chat input
-4. Press Enter to send - other players with this plugin will see the colored link!
+Simply type naturally! The plugin automatically detects item names in your chat messages.
 
-## Screenshots
+**Examples:**
+- Type: `I just got an Abyssal whip!`
+- Shows as: `I just got an [Abyssal whip]!` (with color)
 
 <img width="524" height="289" alt="image" src="https://github.com/user-attachments/assets/56299a11-c2ac-48dc-a117-3388a146ec7c" />
 
+- Type: `Selling Dragon scimitar for 100k`
+- Shows as: `Selling [Dragon scimitar] for 100k` (with color)
 
+- Type: `Anyone want to buy Bandos chestplate?`
+- Shows as: `Anyone want to buy [Bandos chestplate]?` (with color)
+
+**Hover over any highlighted item** to see detailed information including GE price, stats, and more!
+
+## How It Works
+
+1. The plugin loads all OSRS item names when you log in
+2. When you (or anyone else) sends a chat message, it scans for item names
+3. Recognized items are highlighted with colored brackets based on their value
+4. Other players with this plugin installed will see the same highlights
+5. Players without the plugin see your normal, unmodified text
+
+## Configuration
+
+- **Color by Rarity**: Toggle WoW-style rarity colors on/off (default: on)
+
+## Notes
+
+- Only item names with 5+ characters are detected to avoid false positives
+- The plugin uses word boundaries, so "Dragon" inside "Dragonfire" won't match
+- Longer item names take priority (e.g., "Dragon scimitar" matches before "Dragon")
+- This is a client-side modification - other players need the plugin to see highlights
 
 ## Installation
 

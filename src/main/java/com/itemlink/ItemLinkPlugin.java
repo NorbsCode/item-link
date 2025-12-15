@@ -25,25 +25,20 @@
 package com.itemlink;
 
 import com.google.inject.Provides;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
 import net.runelite.api.Client;
+import net.runelite.api.GameState;
 import net.runelite.api.ItemComposition;
-import net.runelite.api.KeyCode;
-import net.runelite.api.MenuAction;
-import net.runelite.api.MenuEntry;
 import net.runelite.api.Player;
-import net.runelite.api.ScriptID;
-import net.runelite.api.VarClientStr;
-import net.runelite.api.events.GameTick;
-import net.runelite.api.events.MenuEntryAdded;
+import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.OverheadTextChanged;
 import net.runelite.api.events.ScriptCallbackEvent;
-import net.runelite.api.widgets.Widget;
-import net.runelite.api.widgets.ComponentID;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -55,38 +50,43 @@ import net.runelite.client.ui.overlay.OverlayManager;
 /**
  * ItemLink Plugin - WoW-style item linking for OSRS chat
  *
- * This plugin allows players to Shift+right-click items in their inventory, equipment,
- * or bank and select "Link in chat" to insert a linkable item reference into the chat.
- * Other players using this plugin will see the item rendered with colored text and
- * can hover over the link to see detailed item information including stats and prices.
+ * This plugin automatically detects item names in chat messages and highlights them
+ * with colored text based on their GE value (rarity). Just type naturally!
  *
- * Features:
- * - Shift+right-click any item to link it in chat
- * - WoW-style rarity colors based on GE value
- * - Hover tooltips showing GE price, HA value, equipment stats, and more
- * - Works in public chat, friends chat, clan chat, and private messages
- * - Formatted display while typing and in overhead text
+ * Examples:
+ *   - "I just got an Abyssal whip!" -> "I just got an [Abyssal whip]!"
+ *   - "Selling Dragon scimitar 100k" -> "Selling [Dragon scimitar] 100k"
+ *
+ * Items are colored by their GE value (WoW-style rarity colors).
+ * Hover over linked items to see detailed stats and prices.
+ * Other players with this plugin will also see the highlighted items.
  */
 @PluginDescriptor(
 	name = "Item Link",
-	description = "Link items in chat like WoW - Shift+right-click items to share them with detailed tooltips",
-	tags = {"item", "link", "chat", "share", "wow", "tooltip", "price"}
+	description = "Automatically highlights item names in chat with rarity colors and tooltips",
+	tags = {"item", "link", "chat", "share", "wow", "highlight", "tooltip", "price"}
 )
 @Slf4j
 public class ItemLinkPlugin extends Plugin
 {
-	private static final String LINK_IN_CHAT = "Link in chat";
-
-	// Token pattern: [[rlitem:ITEM_ID:QUANTITY]]
-	private static final Pattern ITEM_LINK_PATTERN = Pattern.compile("\\[\\[rlitem:(\\d+):(\\d+)\\]\\]");
-
 	// Rarity colors (WoW-style)
-	private static final String COLOR_COMMON = "ffffff";      // White - under 10K
-	private static final String COLOR_UNCOMMON = "1eff00";    // Green - 10K+
-	private static final String COLOR_RARE = "0070dd";        // Blue - 100K+
-	private static final String COLOR_EPIC = "a335ee";        // Purple - 1M+
-	private static final String COLOR_LEGENDARY = "ff8000";   // Orange - 10M+
+	private static final String COLOR_COMMON = "ffffff";      // White
+	private static final String COLOR_UNCOMMON = "1eff00";    // Green
+	private static final String COLOR_RARE = "0070dd";        // Blue
+	private static final String COLOR_EPIC = "a335ee";        // Purple
+	private static final String COLOR_LEGENDARY = "ff8000";   // Orange
 	private static final String COLOR_DEFAULT = "ff8000";     // Orange (default)
+
+	// Minimum item name length to avoid false positives
+	private static final int MIN_ITEM_NAME_LENGTH = 5;
+
+	// Map of lowercase item name -> item ID
+	private final Map<String, Integer> itemNameToId = new HashMap<>();
+
+	// List of item names sorted by length (longest first) for matching
+	private final List<String> sortedItemNames = new ArrayList<>();
+
+	private boolean itemsLoaded = false;
 
 	@Inject
 	private Client client;
@@ -117,6 +117,11 @@ public class ItemLinkPlugin extends Plugin
 	{
 		log.info("ItemLink plugin started");
 		overlayManager.add(itemLinkOverlay);
+
+		if (client.getGameState() == GameState.LOGGED_IN)
+		{
+			loadItemNames();
+		}
 	}
 
 	@Override
@@ -125,16 +130,85 @@ public class ItemLinkPlugin extends Plugin
 		log.info("ItemLink plugin stopped");
 		overlayManager.remove(itemLinkOverlay);
 		itemLinkOverlay.clearRecentItems();
+		itemNameToId.clear();
+		sortedItemNames.clear();
+		itemsLoaded = false;
+	}
+
+	@Subscribe
+	public void onGameStateChanged(GameStateChanged event)
+	{
+		if (event.getGameState() == GameState.LOGGED_IN && !itemsLoaded)
+		{
+			loadItemNames();
+		}
 	}
 
 	/**
-	 * Handles the ScriptCallbackEvent to intercept and modify chat messages
-	 * before they are rendered.
+	 * Load all item names into the lookup map.
 	 */
+	private void loadItemNames()
+	{
+		clientThread.invokeLater(() ->
+		{
+			itemNameToId.clear();
+			sortedItemNames.clear();
+
+			for (int itemId = 0; itemId < 30000; itemId++)
+			{
+				try
+				{
+					ItemComposition itemComp = itemManager.getItemComposition(itemId);
+					if (itemComp == null)
+					{
+						continue;
+					}
+
+					String name = itemComp.getName();
+					if (name == null || name.equals("null") || name.isEmpty())
+					{
+						continue;
+					}
+
+					// Skip very short names to avoid false positives
+					if (name.length() < MIN_ITEM_NAME_LENGTH)
+					{
+						continue;
+					}
+
+					// Skip noted items and placeholders
+					if (itemComp.getNote() != -1 || itemComp.getPlaceholderTemplateId() != -1)
+					{
+						continue;
+					}
+
+					String lowerName = name.toLowerCase();
+
+					// Only store first occurrence (base item)
+					if (!itemNameToId.containsKey(lowerName))
+					{
+						itemNameToId.put(lowerName, itemId);
+					}
+				}
+				catch (Exception e)
+				{
+					// Skip problematic items
+				}
+			}
+
+			// Sort item names by length (longest first) for greedy matching
+			sortedItemNames.addAll(itemNameToId.keySet());
+			sortedItemNames.sort((a, b) -> Integer.compare(b.length(), a.length()));
+
+			itemsLoaded = true;
+			log.info("Loaded {} item names for Item Link", itemNameToId.size());
+		});
+	}
+
 	@Subscribe
 	public void onScriptCallbackEvent(ScriptCallbackEvent event)
 	{
-		if (!"chatFilterCheck".equals(event.getEventName()))
+		if (!itemsLoaded || !"chatFilterCheck".equals(event.getEventName()))
 		{
 			return;
 		}
@@ -143,213 +217,104 @@ public class ItemLinkPlugin extends Plugin
 		int objectStackSize = client.getObjectStackSize();
 
 		String message = (String) objectStack[objectStackSize - 1];
-
-		if (message == null || !message.contains("[[rlitem:"))
+		if (message == null || message.isEmpty())
 		{
 			return;
 		}
 
-		String processedMessage = processItemLinks(message);
-		objectStack[objectStackSize - 1] = processedMessage;
-
-		// Add to recent items for tooltip display
-		ItemLinkData[] links = extractItemLinks(message);
-		for (ItemLinkData link : links)
+		String processed = highlightItemNames(message);
+		if (!processed.equals(message))
 		{
-			itemLinkOverlay.addRecentItem(link.getItemId(), link.getQuantity());
+			objectStack[objectStackSize - 1] = processed;
 		}
 	}
 
-	/**
-	 * Format item links in the chatbox input while typing.
-	 */
-	@Subscribe
-	public void onGameTick(GameTick event)
-	{
-		Widget chatboxInput = client.getWidget(ComponentID.CHATBOX_INPUT);
-		if (chatboxInput == null || chatboxInput.isHidden())
-		{
-			return;
-		}
-
-		// Get the actual typed text (contains raw tokens)
-		String typedText = client.getVarcStrValue(VarClientStr.CHATBOX_TYPED_TEXT);
-		if (typedText == null || !typedText.contains("[[rlitem:"))
-		{
-			return;
-		}
-
-		// Format the display text with colored item names
-		String displayText = processItemLinksForDisplay(typedText);
-
-		// Get the current widget text to check the prefix (e.g., "Player Name: ")
-		String currentWidgetText = chatboxInput.getText();
-		if (currentWidgetText == null)
-		{
-			return;
-		}
-
-		// Find the prefix (everything before the typed text starts)
-		// The widget text format is typically "PlayerName: typed text*"
-		int prefixEnd = currentWidgetText.indexOf(typedText.isEmpty() ? "*" : typedText.substring(0, Math.min(1, typedText.length())));
-		String prefix = "";
-		if (prefixEnd > 0)
-		{
-			// Try to find where the actual message starts by looking for common patterns
-			int colonPos = currentWidgetText.indexOf(": ");
-			if (colonPos > 0 && colonPos < 50)
-			{
-				prefix = currentWidgetText.substring(0, colonPos + 2);
-			}
-		}
-
-		// Update the widget display with formatted text
-		chatboxInput.setText(prefix + displayText + "*");
-	}
-
-	/**
-	 * Format item links in overhead text when player speaks.
-	 */
 	@Subscribe
 	public void onOverheadTextChanged(OverheadTextChanged event)
 	{
-		Actor actor = event.getActor();
+		if (!itemsLoaded)
+		{
+			return;
+		}
 
-		// Only process for players (not NPCs)
+		Actor actor = event.getActor();
 		if (!(actor instanceof Player))
 		{
 			return;
 		}
 
 		String text = event.getOverheadText();
-		if (text == null || !text.contains("[[rlitem:"))
+		if (text == null || text.isEmpty())
 		{
 			return;
 		}
 
-		// Format the overhead text with colored item names
-		String formattedText = processItemLinks(text);
-		actor.setOverheadText(formattedText);
+		String formatted = highlightItemNames(text);
+		if (!formatted.equals(text))
+		{
+			actor.setOverheadText(formatted);
+		}
 	}
 
 	/**
-	 * Process item links for display purposes (removes the fallback text too).
+	 * Scan message for item names and highlight them.
+	 * Uses longest-match-first greedy algorithm.
 	 */
-	private String processItemLinksForDisplay(String message)
+	private String highlightItemNames(String message)
 	{
-		Matcher matcher = ITEM_LINK_PATTERN.matcher(message);
-		StringBuffer result = new StringBuffer();
+		String lowerMessage = message.toLowerCase();
+		StringBuilder result = new StringBuilder();
 
-		while (matcher.find())
+		int i = 0;
+		while (i < message.length())
 		{
-			try
+			boolean matched = false;
+
+			// Try to match item names starting at position i (longest first)
+			for (String itemName : sortedItemNames)
 			{
-				int itemId = Integer.parseInt(matcher.group(1));
-				int quantity = Integer.parseInt(matcher.group(2));
-
-				if (itemId <= 0 || itemId > 50000)
+				if (i + itemName.length() > lowerMessage.length())
 				{
 					continue;
 				}
 
-				ItemComposition itemComp = itemManager.getItemComposition(itemId);
-				String itemName = itemComp.getName();
-
-				if (itemName == null || itemName.equals("null"))
+				// Check if the item name matches at this position
+				if (!lowerMessage.regionMatches(i, itemName, 0, itemName.length()))
 				{
 					continue;
 				}
 
-				String color = getItemColor(itemId, itemComp);
-				String quantityStr = quantity > 1 ? " x" + quantity : "";
+				// Check word boundaries
+				boolean validStart = (i == 0 || !Character.isLetterOrDigit(lowerMessage.charAt(i - 1)));
+				boolean validEnd = (i + itemName.length() >= lowerMessage.length() ||
+					!Character.isLetterOrDigit(lowerMessage.charAt(i + itemName.length())));
 
-				String replacement = String.format("<col=%s>[%s%s]</col>",
-					color, itemName, quantityStr);
+				if (!validStart || !validEnd)
+				{
+					continue;
+				}
 
-				matcher.appendReplacement(result, Matcher.quoteReplacement(replacement));
+				// Found a match! Get original case from message
+				String originalName = message.substring(i, i + itemName.length());
+				int itemId = itemNameToId.get(itemName);
+				String color = getItemColor(itemId);
+
+				result.append(String.format("<col=%s>[%s]</col>", color, originalName));
+
+				// Add to overlay for tooltip
+				itemLinkOverlay.addRecentItem(itemId, 1);
+
+				i += itemName.length();
+				matched = true;
+				break;
 			}
-			catch (NumberFormatException e)
+
+			if (!matched)
 			{
-				log.debug("Failed to parse item link numbers", e);
+				result.append(message.charAt(i));
+				i++;
 			}
 		}
-
-		matcher.appendTail(result);
-
-		String processed = result.toString();
-		// Also clean up the fallback text (item name before the link)
-		processed = cleanupFallbackText(processed);
-
-		return processed;
-	}
-
-	/**
-	 * Process all item link tokens in a message and replace them with formatted text.
-	 */
-	private String processItemLinks(String message)
-	{
-		Matcher matcher = ITEM_LINK_PATTERN.matcher(message);
-		StringBuffer result = new StringBuffer();
-
-		while (matcher.find())
-		{
-			try
-			{
-				int itemId = Integer.parseInt(matcher.group(1));
-				int quantity = Integer.parseInt(matcher.group(2));
-
-				if (itemId <= 0 || itemId > 50000)
-				{
-					continue;
-				}
-
-				ItemComposition itemComp = itemManager.getItemComposition(itemId);
-				String itemName = itemComp.getName();
-
-				if (itemName == null || itemName.equals("null"))
-				{
-					continue;
-				}
-
-				String color = getItemColor(itemId, itemComp);
-				String quantityStr = quantity > 1 ? " x" + quantity : "";
-
-				String replacement = String.format("<col=%s>[%s%s]</col>",
-					color, itemName, quantityStr);
-
-				matcher.appendReplacement(result, Matcher.quoteReplacement(replacement));
-			}
-			catch (NumberFormatException e)
-			{
-				log.debug("Failed to parse item link numbers", e);
-			}
-		}
-
-		matcher.appendTail(result);
-
-		String processed = result.toString();
-		processed = cleanupFallbackText(processed);
-
-		return processed;
-	}
-
-	/**
-	 * Removes the human-readable fallback text that precedes item links.
-	 * Matches pattern like "Item Name x1 " right before the colored link.
-	 */
-	private String cleanupFallbackText(String message)
-	{
-		// Match: "ItemName xN " immediately before "<col=...>[ItemName"
-		// This is more specific to avoid removing usernames
-		Pattern cleanupPattern = Pattern.compile("([A-Z][\\w\\s'()-]+?)\\s+x(\\d+)\\s+(<col=[^>]+>\\[\\1)");
-		Matcher matcher = cleanupPattern.matcher(message);
-
-		StringBuffer result = new StringBuffer();
-		while (matcher.find())
-		{
-			matcher.appendReplacement(result, Matcher.quoteReplacement(matcher.group(3)));
-		}
-		matcher.appendTail(result);
 
 		return result.toString();
 	}
@@ -357,29 +322,28 @@ public class ItemLinkPlugin extends Plugin
 	/**
 	 * Determines the color for an item based on its GE value.
 	 */
-	private String getItemColor(int itemId, ItemComposition itemComp)
+	private String getItemColor(int itemId)
 	{
 		if (!config.colorByRarity())
 		{
 			return COLOR_DEFAULT;
 		}
 
-		// Use GE price for rarity
 		int gePrice = itemManager.getItemPrice(itemId);
 
-		if (gePrice >= 10000000)      // 10M+
+		if (gePrice >= 10000000)
 		{
 			return COLOR_LEGENDARY;
 		}
-		else if (gePrice >= 1000000)  // 1M+
+		else if (gePrice >= 1000000)
 		{
 			return COLOR_EPIC;
 		}
-		else if (gePrice >= 100000)   // 100K+
+		else if (gePrice >= 100000)
 		{
 			return COLOR_RARE;
 		}
-		else if (gePrice >= 10000)    // 10K+
+		else if (gePrice >= 10000)
 		{
 			return COLOR_UNCOMMON;
 		}
@@ -387,201 +351,5 @@ public class ItemLinkPlugin extends Plugin
 		{
 			return COLOR_COMMON;
 		}
-	}
-
-	/**
-	 * Opens the chatbox input if it's not already open.
-	 */
-	private void openChatboxIfNeeded()
-	{
-		clientThread.invokeLater(() ->
-		{
-			// Check if chatbox is already open for typing
-			Widget chatboxInput = client.getWidget(ComponentID.CHATBOX_INPUT);
-			if (chatboxInput == null || chatboxInput.isHidden())
-			{
-				// Try to open the chatbox by running the appropriate script
-				// This simulates pressing Enter to open chat
-				client.runScript(ScriptID.CHAT_PROMPT_INIT);
-			}
-		});
-	}
-
-	/**
-	 * Inserts an item link token into the current chatbox input.
-	 */
-	private void insertItemLink(int itemId, String itemName, int quantity)
-	{
-		clientThread.invokeLater(() ->
-		{
-			// Get current chatbox text
-			String currentText = client.getVarcStrValue(VarClientStr.CHATBOX_TYPED_TEXT);
-			if (currentText == null)
-			{
-				currentText = "";
-			}
-
-			// Build the item link token
-			String quantityStr = quantity > 1 ? " x" + quantity : " x1";
-			String itemLink = String.format("%s%s [[rlitem:%d:%d]]",
-				itemName, quantityStr, itemId, quantity);
-
-			// Append to current text
-			String newText;
-			if (currentText.isEmpty())
-			{
-				newText = itemLink;
-			}
-			else
-			{
-				if (!currentText.endsWith(" "))
-				{
-					newText = currentText + " " + itemLink;
-				}
-				else
-				{
-					newText = currentText + itemLink;
-				}
-			}
-
-			// Set the new chatbox text
-			client.setVarcStrValue(VarClientStr.CHATBOX_TYPED_TEXT, newText);
-
-			// Update the chatbox widget to reflect the change
-			Widget chatboxInput = client.getWidget(ComponentID.CHATBOX_INPUT);
-			if (chatboxInput != null)
-			{
-				chatboxInput.setText(newText + "*");
-			}
-		});
-	}
-
-	/**
-	 * Extracts item link data from a message.
-	 */
-	public ItemLinkData[] extractItemLinks(String message)
-	{
-		if (message == null || !message.contains("[[rlitem:"))
-		{
-			return new ItemLinkData[0];
-		}
-
-		Matcher matcher = ITEM_LINK_PATTERN.matcher(message);
-		java.util.List<ItemLinkData> links = new java.util.ArrayList<>();
-
-		while (matcher.find())
-		{
-			try
-			{
-				int itemId = Integer.parseInt(matcher.group(1));
-				int quantity = Integer.parseInt(matcher.group(2));
-
-				if (itemId > 0 && itemId < 50000)
-				{
-					links.add(new ItemLinkData(itemId, quantity, matcher.start(), matcher.end()));
-				}
-			}
-			catch (NumberFormatException e)
-			{
-				// Skip malformed tokens
-			}
-		}
-
-		return links.toArray(new ItemLinkData[0]);
-	}
-
-	/**
-	 * Adds the "Link in chat" menu option when Shift is held.
-	 */
-	@Subscribe
-	public void onMenuEntryAdded(MenuEntryAdded event)
-	{
-		// Only add menu option when shift is held
-		if (!client.isKeyPressed(KeyCode.KC_SHIFT))
-		{
-			return;
-		}
-
-		int itemId = event.getItemId();
-		if (itemId <= 0)
-		{
-			return;
-		}
-
-		// Check if we already added a link option (any link option)
-		for (MenuEntry entry : client.getMenu().getMenuEntries())
-		{
-			if (LINK_IN_CHAT.equals(entry.getOption()))
-			{
-				return;
-			}
-		}
-
-		// Get quantity from the widget
-		int quantity = 1;
-		Widget widget = client.getWidget(event.getActionParam1());
-		if (widget != null)
-		{
-			Widget child = widget.getChild(event.getActionParam0());
-			if (child != null && child.getItemQuantity() > 0)
-			{
-				quantity = child.getItemQuantity();
-			}
-		}
-
-		final int finalQuantity = quantity;
-
-		// Add our custom menu entry
-		client.getMenu().createMenuEntry(-1)
-			.setOption(LINK_IN_CHAT)
-			.setTarget(event.getTarget())
-			.setType(MenuAction.RUNELITE)
-			.setIdentifier(event.getIdentifier())
-			.setParam0(event.getActionParam0())
-			.setParam1(event.getActionParam1())
-			.onClick(e -> handleLinkInChat(itemId, finalQuantity));
-	}
-
-	/**
-	 * Handles the "Link in chat" menu click.
-	 */
-	private void handleLinkInChat(int itemId, int quantity)
-	{
-		if (itemId <= 0)
-		{
-			return;
-		}
-
-		ItemComposition itemComp = itemManager.getItemComposition(itemId);
-		String itemName = itemComp.getName();
-
-		if (itemName == null || itemName.equals("null"))
-		{
-			return;
-		}
-
-		if (quantity <= 0)
-		{
-			quantity = 1;
-		}
-
-		// Open chatbox if needed and insert the link
-		openChatboxIfNeeded();
-		insertItemLink(itemId, itemName, quantity);
-
-		log.debug("Linked item in chat: {} x{} (ID: {})", itemName, quantity, itemId);
-	}
-
-	/**
-	 * Data class to hold parsed item link information.
-	 */
-	@lombok.Data
-	@lombok.AllArgsConstructor
-	public static class ItemLinkData
-	{
-		private final int itemId;
-		private final int quantity;
-		private final int startIndex;
-		private final int endIndex;
 	}
 }
