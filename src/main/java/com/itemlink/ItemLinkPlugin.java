@@ -27,18 +27,21 @@ package com.itemlink;
 import com.google.inject.Provides;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
+import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.Player;
+import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.OverheadTextChanged;
-import net.runelite.api.events.ScriptCallbackEvent;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -91,6 +94,12 @@ public class ItemLinkPlugin extends Plugin
 	// List of item names sorted by length (longest first) for matching
 	private final List<String> sortedItemNames = new ArrayList<>();
 
+	// Set of all single-word item names for O(1) lookup
+	private final Set<String> singleWordItems = new HashSet<>();
+
+	// Map of first word -> list of multi-word item names starting with that word (sorted by length, longest first)
+	private final Map<String, List<String>> multiWordItemsByFirstWord = new HashMap<>();
+
 	private boolean itemsLoaded = false;
 
 	@Inject
@@ -137,6 +146,8 @@ public class ItemLinkPlugin extends Plugin
 		itemLinkOverlay.clearRecentItems();
 		itemNameToId.clear();
 		sortedItemNames.clear();
+		singleWordItems.clear();
+		multiWordItemsByFirstWord.clear();
 		itemsLoaded = false;
 	}
 
@@ -149,17 +160,35 @@ public class ItemLinkPlugin extends Plugin
 		}
 	}
 
+	// Number of items to process per chunk to avoid blocking the game
+	private static final int ITEMS_PER_CHUNK = 2000;
+	private static final int MAX_ITEM_ID = 30000;
+
 	/**
 	 * Load all item names into the lookup map.
+	 * Uses chunked loading to avoid blocking the game client.
 	 */
 	private void loadItemNames()
 	{
+		itemNameToId.clear();
+		sortedItemNames.clear();
+		singleWordItems.clear();
+		multiWordItemsByFirstWord.clear();
+
+		// Start loading from the first chunk
+		loadItemChunk(0);
+	}
+
+	/**
+	 * Load a chunk of items starting at the given ID.
+	 */
+	private void loadItemChunk(final int startId)
+	{
 		clientThread.invokeLater(() ->
 		{
-			itemNameToId.clear();
-			sortedItemNames.clear();
+			int endId = Math.min(startId + ITEMS_PER_CHUNK, MAX_ITEM_ID);
 
-			for (int itemId = 0; itemId < 30000; itemId++)
+			for (int itemId = startId; itemId < endId; itemId++)
 			{
 				try
 				{
@@ -201,27 +230,84 @@ public class ItemLinkPlugin extends Plugin
 				}
 			}
 
-			// Sort item names by length (longest first) for greedy matching
-			sortedItemNames.addAll(itemNameToId.keySet());
-			sortedItemNames.sort((a, b) -> Integer.compare(b.length(), a.length()));
-
-			itemsLoaded = true;
-			log.info("Loaded {} item names for Item Link", itemNameToId.size());
+			if (endId < MAX_ITEM_ID)
+			{
+				// Schedule next chunk
+				loadItemChunk(endId);
+			}
+			else
+			{
+				// All chunks loaded, finalize
+				finalizeItemLoading();
+			}
 		});
 	}
 
-	@Subscribe
-	public void onScriptCallbackEvent(ScriptCallbackEvent event)
+	/**
+	 * Finalize item loading by building optimized lookup structures.
+	 */
+	private void finalizeItemLoading()
 	{
-		if (!itemsLoaded || !"chatFilterCheck".equals(event.getEventName()))
+		// Sort item names by length (longest first) for greedy matching
+		sortedItemNames.addAll(itemNameToId.keySet());
+		sortedItemNames.sort((a, b) -> Integer.compare(b.length(), a.length()));
+
+		// Build optimized lookup structures
+		for (String itemName : sortedItemNames)
+		{
+			int spaceIndex = itemName.indexOf(' ');
+			if (spaceIndex == -1)
+			{
+				// Single-word item
+				singleWordItems.add(itemName);
+			}
+			else
+			{
+				// Multi-word item - index by first word
+				String firstWord = itemName.substring(0, spaceIndex);
+				multiWordItemsByFirstWord
+					.computeIfAbsent(firstWord, k -> new ArrayList<>())
+					.add(itemName);
+			}
+		}
+
+		itemsLoaded = true;
+		log.info("Loaded {} item names for Item Link ({} single-word, {} multi-word prefixes)",
+			itemNameToId.size(), singleWordItems.size(), multiWordItemsByFirstWord.size());
+	}
+
+	@Subscribe
+	public void onChatMessage(ChatMessage event)
+	{
+		if (!itemsLoaded)
 		{
 			return;
 		}
 
-		Object[] objectStack = client.getObjectStack();
-		int objectStackSize = client.getObjectStackSize();
+		// Only process player chat messages, not system/game messages
+		ChatMessageType type = event.getType();
+		switch (type)
+		{
+			case PUBLICCHAT:
+			case MODCHAT:
+			case PRIVATECHAT:
+			case PRIVATECHATOUT:
+			case FRIENDSCHAT:
+			case CLAN_CHAT:
+			case CLAN_GUEST_CHAT:
+			case CLAN_GIM_CHAT:
+			case AUTOTYPER:
+			case MODAUTOTYPER:
+			case TRADEREQ:
+			case CHALREQ_TRADE:
+				// These are player messages - process them
+				break;
+			default:
+				// Skip system messages, examine text, NPC dialogue, etc.
+				return;
+		}
 
-		String message = (String) objectStack[objectStackSize - 1];
+		String message = event.getMessage();
 		if (message == null || message.isEmpty())
 		{
 			return;
@@ -230,7 +316,7 @@ public class ItemLinkPlugin extends Plugin
 		String processed = highlightItemNames(message);
 		if (!processed.equals(message))
 		{
-			objectStack[objectStackSize - 1] = processed;
+			event.getMessageNode().setValue(processed);
 		}
 	}
 
@@ -263,7 +349,7 @@ public class ItemLinkPlugin extends Plugin
 
 	/**
 	 * Scan message for item names and highlight them.
-	 * Uses longest-match-first greedy algorithm.
+	 * Uses optimized word-boundary scanning with HashSet lookups.
 	 */
 	private String highlightItemNames(String message)
 	{
@@ -273,35 +359,66 @@ public class ItemLinkPlugin extends Plugin
 		int i = 0;
 		while (i < message.length())
 		{
-			boolean matched = false;
+			// Only check at word boundaries (start of message or after non-letter/digit)
+			boolean atWordBoundary = (i == 0 || !Character.isLetterOrDigit(lowerMessage.charAt(i - 1)));
 
-			// Try to match item names starting at position i (longest first)
-			for (String itemName : sortedItemNames)
+			if (!atWordBoundary || !Character.isLetterOrDigit(lowerMessage.charAt(i)))
 			{
-				if (i + itemName.length() > lowerMessage.length())
+				result.append(message.charAt(i));
+				i++;
+				continue;
+			}
+
+			// Extract the current word
+			int wordEnd = i;
+			while (wordEnd < lowerMessage.length() && Character.isLetterOrDigit(lowerMessage.charAt(wordEnd)))
+			{
+				wordEnd++;
+			}
+			String currentWord = lowerMessage.substring(i, wordEnd);
+
+			String matchedItemName = null;
+
+			// First, check for multi-word items starting with this word (longest first)
+			List<String> multiWordCandidates = multiWordItemsByFirstWord.get(currentWord);
+			if (multiWordCandidates != null)
+			{
+				for (String candidate : multiWordCandidates)
 				{
-					continue;
+					if (i + candidate.length() > lowerMessage.length())
+					{
+						continue;
+					}
+
+					// Check if full item name matches
+					if (!lowerMessage.regionMatches(i, candidate, 0, candidate.length()))
+					{
+						continue;
+					}
+
+					// Check end boundary
+					int endPos = i + candidate.length();
+					if (endPos < lowerMessage.length() && Character.isLetterOrDigit(lowerMessage.charAt(endPos)))
+					{
+						continue;
+					}
+
+					matchedItemName = candidate;
+					break; // Multi-word candidates are already sorted longest-first
 				}
+			}
 
-				// Check if the item name matches at this position
-				if (!lowerMessage.regionMatches(i, itemName, 0, itemName.length()))
-				{
-					continue;
-				}
+			// If no multi-word match, check for single-word item
+			if (matchedItemName == null && singleWordItems.contains(currentWord))
+			{
+				matchedItemName = currentWord;
+			}
 
-				// Check word boundaries
-				boolean validStart = (i == 0 || !Character.isLetterOrDigit(lowerMessage.charAt(i - 1)));
-				boolean validEnd = (i + itemName.length() >= lowerMessage.length() ||
-					!Character.isLetterOrDigit(lowerMessage.charAt(i + itemName.length())));
-
-				if (!validStart || !validEnd)
-				{
-					continue;
-				}
-
+			if (matchedItemName != null)
+			{
 				// Found a match! Get original case from message
-				String originalName = message.substring(i, i + itemName.length());
-				int itemId = itemNameToId.get(itemName);
+				String originalName = message.substring(i, i + matchedItemName.length());
+				int itemId = itemNameToId.get(matchedItemName);
 				String color = getItemColor(itemId);
 
 				result.append(String.format("<col=%s>[%s]</col><col=%s>", color, originalName, COLOR_PUBLIC_CHAT));
@@ -309,12 +426,9 @@ public class ItemLinkPlugin extends Plugin
 				// Add to overlay for tooltip
 				itemLinkOverlay.addRecentItem(itemId, 1);
 
-				i += itemName.length();
-				matched = true;
-				break;
+				i += matchedItemName.length();
 			}
-
-			if (!matched)
+			else
 			{
 				result.append(message.charAt(i));
 				i++;
