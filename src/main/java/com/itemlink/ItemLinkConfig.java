@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2025, LordStrange
  * All rights reserved.
  *
@@ -41,4 +41,38 @@ public interface ItemLinkConfig extends Config
 	{
 		return true;
 	}
+
+	@ConfigItem(
+		keyName = "filteredItems",
+		name = "Filtered items",
+		description = "Comma-separated list of item names to exclude from linking (e.g., 'Coins, Bones, Ashes')",
+		position = 1
+	)
+	default String filteredItems()
+	{
+		return "";
+	}
+
+	@ConfigItem(
+		keyName = "minimumItemValue",
+		name = "Minimum item value",
+		description = "Only link items worth at least this much GP (0 to disable)",
+		position = 2
+	)
+	default int minimumItemValue()
+	{
+		return 0;
+	}
+
+	@ConfigItem(
+		keyName = "maximumItemValue",
+		name = "Maximum item value",
+		description = "Only link items worth at most this much GP (0 to disable)",
+		position = 3
+	)
+	default int maximumItemValue()
+	{
+		return 0;
+	}
 }
+

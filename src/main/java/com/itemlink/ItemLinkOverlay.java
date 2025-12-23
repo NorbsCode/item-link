@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2025, LordStrange
  * All rights reserved.
  *
@@ -24,45 +24,54 @@
  */
 package com.itemlink;
 
+import java.awt.Color;
 import java.awt.Dimension;
+import java.awt.Font;
+import java.awt.FontMetrics;
 import java.awt.Graphics2D;
 import java.awt.Rectangle;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.inject.Inject;
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.Point;
+import net.runelite.api.SpriteID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.game.ItemEquipmentStats;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.ItemStats;
+import net.runelite.client.game.SpriteManager;
+import net.runelite.client.ui.FontManager;
 import net.runelite.client.ui.overlay.Overlay;
 import net.runelite.client.ui.overlay.OverlayLayer;
 import net.runelite.client.ui.overlay.OverlayPosition;
 import net.runelite.client.ui.overlay.OverlayPriority;
-import net.runelite.client.ui.overlay.tooltip.Tooltip;
-import net.runelite.client.ui.overlay.tooltip.TooltipManager;
+import net.runelite.client.util.ImageUtil;
 import net.runelite.client.util.QuantityFormatter;
 
+@Slf4j
 public class ItemLinkOverlay extends Overlay
 {
 	private static final int MAX_CACHED_ITEMS = 50;
-	private static final int MOUSE_MOVE_THRESHOLD = 2; // Minimum pixels to trigger re-scan
+	private static final int MOUSE_MOVE_THRESHOLD = 2;
 
-	// Pattern to detect colored item names in chat: <col=XXXXXX>[ItemName]</col> or <col=XXXXXX>[ItemName x123]</col>
-	private static final Pattern COLORED_ITEM_PATTERN = Pattern.compile("<col=[0-9a-fA-F]+>\\[([^\\]]+?)(?:\\s+x(\\d+))?\\]</col>");
+	private static final Pattern COLORED_ITEM_PATTERN = Pattern.compile("<col=[0-9a-fA-F]+>([^<]+?)(?:\\s+x(\\d+))?</col>");
 
 	// Rarity colors (WoW-style)
-	private static final String COLOR_COMMON = "ffffff";      // White
-	private static final String COLOR_UNCOMMON = "1eff00";    // Green
-	private static final String COLOR_RARE = "0070dd";        // Blue
-	private static final String COLOR_EPIC = "a335ee";        // Purple
-	private static final String COLOR_LEGENDARY = "ff8000";   // Orange
+	private static final String COLOR_COMMON = "ffffff";
+	private static final String COLOR_UNCOMMON = "1eff00";
+	private static final String COLOR_RARE = "0070dd";
+	private static final String COLOR_EPIC = "a335ee";
+	private static final String COLOR_LEGENDARY = "ff8000";
 
 	// UI colors
 	private static final String COLOR_LABEL = "999999";
@@ -70,18 +79,18 @@ public class ItemLinkOverlay extends Overlay
 	private static final String COLOR_VALUE_NEGATIVE = "ff0000";
 	private static final String COLOR_VALUE_NEUTRAL = "ffff00";
 	private static final String COLOR_GOLD = "ffd700";
-	private static final String COLOR_ALCH = "ff9040";
 	private static final String COLOR_SEPARATOR = "444444";
+	private static final String COLOR_EXAMINE = "aaaaaa";
 
-	// Mouse position caching to avoid re-scanning every frame
+	// Mouse position caching
 	private int lastMouseX = -1;
 	private int lastMouseY = -1;
+	private int cachedIconX = -1;
+	private int cachedIconY = -1;
 	private Widget cachedHoveredWidget = null;
 	private String cachedWidgetText = null;
 	private List<ItemLinkInfo> cachedFoundItems = null;
-	private String cachedTooltipText = null;
 
-	// Cache of item info by item ID
 	private final Map<Integer, ItemLinkInfo> recentItems = new LinkedHashMap<Integer, ItemLinkInfo>()
 	{
 		@Override
@@ -91,7 +100,6 @@ public class ItemLinkOverlay extends Overlay
 		}
 	};
 
-	// Cache of item info by item name (lowercase for case-insensitive lookup)
 	private final Map<String, ItemLinkInfo> itemsByName = new LinkedHashMap<String, ItemLinkInfo>()
 	{
 		@Override
@@ -101,28 +109,85 @@ public class ItemLinkOverlay extends Overlay
 		}
 	};
 
+	// Tooltip styling
+	private static final int TOOLTIP_PADDING = 8;
+	private static final int ITEM_ICON_SIZE = 36;
+	private static final int STAT_ICON_SIZE = 16;
+	private static final int ICON_TEXT_GAP = 4;
+	private static final Color TOOLTIP_BACKGROUND = new Color(30, 30, 30, 245);
+	private static final Color TOOLTIP_BORDER = new Color(90, 90, 90);
+	private static final Color TOOLTIP_BORDER_INNER = new Color(40, 40, 40);
+
 	private final Client client;
 	private final ItemLinkConfig config;
 	private final ItemManager itemManager;
-	private final TooltipManager tooltipManager;
+	private final SpriteManager spriteManager;
+	private final ItemLinkDataLoader ItemLinkDataLoader;
+
+	private final Map<String, BufferedImage> spriteCache = new HashMap<>();
+	private boolean spritesLoaded = false;
+
+	// Cached tooltips for multiple items (rendered side by side)
+	private List<CachedItemTooltip> cachedTooltips = null;
 
 	@Inject
 	private ItemLinkOverlay(Client client, ItemLinkPlugin plugin, ItemLinkConfig config,
-							ItemManager itemManager, TooltipManager tooltipManager)
+							ItemManager itemManager, SpriteManager spriteManager,
+							ItemLinkDataLoader ItemLinkDataLoader)
 	{
 		this.client = client;
 		this.config = config;
 		this.itemManager = itemManager;
-		this.tooltipManager = tooltipManager;
+		this.spriteManager = spriteManager;
+		this.ItemLinkDataLoader = ItemLinkDataLoader;
 
 		setPosition(OverlayPosition.DYNAMIC);
 		setLayer(OverlayLayer.ABOVE_WIDGETS);
 		setPriority(OverlayPriority.HIGH);
 	}
 
+	private void loadSprites()
+	{
+		if (spritesLoaded)
+		{
+			return;
+		}
+
+		loadSprite("high_alch", SpriteID.SPELL_HIGH_LEVEL_ALCHEMY);
+		loadSprite("low_alch", SpriteID.SPELL_LOW_LEVEL_ALCHEMY);
+		loadSprite("stab", SpriteID.SKILL_ATTACK);
+		loadSprite("slash", SpriteID.SKILL_STRENGTH);
+		loadSprite("crush", SpriteID.SKILL_DEFENCE);
+		loadSprite("attack", SpriteID.SKILL_ATTACK);
+		loadSprite("strength", SpriteID.SKILL_STRENGTH);
+		loadSprite("defence", SpriteID.SKILL_DEFENCE);
+		loadSprite("ranged", SpriteID.SKILL_RANGED);
+		loadSprite("magic", SpriteID.SKILL_MAGIC);
+		loadSprite("prayer", SpriteID.SKILL_PRAYER);
+		loadSprite("weight", SpriteID.EQUIPMENT_WEIGHT);
+
+		spritesLoaded = true;
+	}
+
+	private void loadSprite(String name, int spriteId)
+	{
+		BufferedImage sprite = spriteManager.getSprite(spriteId, 0);
+		if (sprite != null)
+		{
+			spriteCache.put(name, ImageUtil.resizeImage(sprite, STAT_ICON_SIZE, STAT_ICON_SIZE));
+		}
+	}
+
+	private BufferedImage getSprite(String name)
+	{
+		return spriteCache.get(name);
+	}
+
 	@Override
 	public Dimension render(Graphics2D graphics)
 	{
+		loadSprites();
+
 		if (itemsByName.isEmpty())
 		{
 			return null;
@@ -137,33 +202,27 @@ public class ItemLinkOverlay extends Overlay
 		int mouseX = mousePos.getX();
 		int mouseY = mousePos.getY();
 
-		// Check if mouse has moved significantly
 		boolean mouseMovedSignificantly = Math.abs(mouseX - lastMouseX) > MOUSE_MOVE_THRESHOLD ||
 										  Math.abs(mouseY - lastMouseY) > MOUSE_MOVE_THRESHOLD;
 
-		// Fast path: if mouse hasn't moved and we have a cached tooltip, just show it
-		if (!mouseMovedSignificantly && cachedTooltipText != null)
+		if (!mouseMovedSignificantly && cachedTooltips != null && !cachedTooltips.isEmpty())
 		{
-			// Quick bounds check on cached widget
 			if (cachedHoveredWidget != null)
 			{
 				Rectangle bounds = cachedHoveredWidget.getBounds();
 				if (bounds != null && bounds.contains(mouseX, mouseY))
 				{
-					tooltipManager.add(new Tooltip(cachedTooltipText));
+					renderMultipleTooltips(graphics, cachedTooltips, cachedIconX, cachedIconY);
 					return null;
 				}
 			}
-			// Bounds check failed, clear cache
 			clearTooltipCache();
 			return null;
 		}
 
-		// Mouse moved - update position
 		lastMouseX = mouseX;
 		lastMouseY = mouseY;
 
-		// Find hovered widget
 		Widget hoveredChatLine = findHoveredChatLine(mousePos);
 		if (hoveredChatLine == null)
 		{
@@ -178,19 +237,16 @@ public class ItemLinkOverlay extends Overlay
 			return null;
 		}
 
-		// Check if text changed - if not, reuse cached tooltip
-		if (text.equals(cachedWidgetText) && cachedTooltipText != null)
+		if (text.equals(cachedWidgetText) && cachedTooltips != null && !cachedTooltips.isEmpty())
 		{
 			cachedHoveredWidget = hoveredChatLine;
-			tooltipManager.add(new Tooltip(cachedTooltipText));
+			renderMultipleTooltips(graphics, cachedTooltips, cachedIconX, cachedIconY);
 			return null;
 		}
 
-		// Text changed, need to rebuild tooltip
 		cachedHoveredWidget = hoveredChatLine;
 		cachedWidgetText = text;
 
-		// Find colored item names in the text
 		List<ItemLinkInfo> foundItems = new ArrayList<>();
 		Matcher matcher = COLORED_ITEM_PATTERN.matcher(text);
 
@@ -210,8 +266,17 @@ public class ItemLinkOverlay extends Overlay
 		if (!foundItems.isEmpty())
 		{
 			cachedFoundItems = foundItems;
-			cachedTooltipText = buildTooltipText(foundItems);
-			tooltipManager.add(new Tooltip(cachedTooltipText));
+			cachedTooltips = new ArrayList<>();
+			for (ItemLinkInfo info : foundItems)
+			{
+				CachedItemTooltip tooltip = new CachedItemTooltip();
+				tooltip.icon = itemManager.getImage(info.itemId);
+				tooltip.lines = buildTooltipLinesForItem(info);
+				cachedTooltips.add(tooltip);
+			}
+			cachedIconX = mouseX;
+			cachedIconY = mouseY;
+			renderMultipleTooltips(graphics, cachedTooltips, cachedIconX, cachedIconY);
 		}
 		else
 		{
@@ -221,24 +286,201 @@ public class ItemLinkOverlay extends Overlay
 		return null;
 	}
 
+	/**
+	 * Render multiple tooltips side by side horizontally.
+	 */
+	private void renderMultipleTooltips(Graphics2D graphics, List<CachedItemTooltip> tooltips, int mouseX, int mouseY)
+	{
+		if (graphics == null || tooltips == null || tooltips.isEmpty())
+		{
+			return;
+		}
+
+		graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+		Font font = FontManager.getRunescapeSmallFont();
+		graphics.setFont(font);
+		FontMetrics fm = graphics.getFontMetrics();
+
+		int lineHeight = Math.max(fm.getHeight(), STAT_ICON_SIZE + 2);
+		int tooltipGap = 8;
+
+		// Calculate dimensions for each tooltip
+		List<int[]> tooltipDimensions = new ArrayList<>();
+		int totalWidth = 0;
+		int maxHeight = 0;
+
+		for (CachedItemTooltip tooltip : tooltips)
+		{
+			int textWidth = 0;
+			for (TooltipLine line : tooltip.lines)
+			{
+				int lineWidth = calculateLineWidth(line, fm);
+				textWidth = Math.max(textWidth, lineWidth);
+			}
+
+			int textHeight = tooltip.lines.size() * lineHeight;
+			boolean hasIcon = (tooltip.icon != null);
+			int iconAreaWidth = hasIcon ? ITEM_ICON_SIZE + TOOLTIP_PADDING : 0;
+
+			int width = textWidth + iconAreaWidth + (TOOLTIP_PADDING * 2);
+			int height = Math.max(hasIcon ? ITEM_ICON_SIZE + TOOLTIP_PADDING : 0, textHeight) + (TOOLTIP_PADDING * 2);
+
+			tooltipDimensions.add(new int[]{width, height});
+			totalWidth += width;
+			maxHeight = Math.max(maxHeight, height);
+		}
+
+		// Add gaps between tooltips
+		totalWidth += tooltipGap * (tooltips.size() - 1);
+
+		// Position tooltips near mouse
+		int startX = mouseX + 15;
+		int startY = mouseY + 15;
+
+		int canvasWidth = client.getCanvasWidth();
+		int canvasHeight = client.getCanvasHeight();
+
+		// Check right edge
+		if (startX + totalWidth > canvasWidth)
+		{
+			startX = mouseX - totalWidth - 5;
+		}
+		// Check left edge - ensure tooltip doesn't go off-screen
+		if (startX < 0)
+		{
+			startX = 2;
+		}
+
+		// Check bottom edge
+		if (startY + maxHeight > canvasHeight)
+		{
+			startY = mouseY - maxHeight - 5;
+		}
+		// Check top edge
+		if (startY < 0)
+		{
+			startY = 2;
+		}
+
+		// Draw each tooltip
+		int currentX = startX;
+		for (int i = 0; i < tooltips.size(); i++)
+		{
+			CachedItemTooltip tooltip = tooltips.get(i);
+			int[] dims = tooltipDimensions.get(i);
+			int tooltipWidth = dims[0];
+			int tooltipHeight = dims[1];
+
+			renderSingleTooltip(graphics, tooltip.icon, tooltip.lines, currentX, startY, tooltipWidth, tooltipHeight, fm, lineHeight);
+
+			currentX += tooltipWidth + tooltipGap;
+		}
+	}
+
+	/**
+	 * Render a single tooltip at a specific position.
+	 */
+	private void renderSingleTooltip(Graphics2D graphics, BufferedImage icon, List<TooltipLine> lines,
+									 int tooltipX, int tooltipY, int tooltipWidth, int tooltipHeight,
+									 FontMetrics fm, int lineHeight)
+	{
+		// Draw background
+		graphics.setColor(TOOLTIP_BACKGROUND);
+		graphics.fillRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
+
+		// Draw borders
+		graphics.setColor(TOOLTIP_BORDER_INNER);
+		graphics.drawRect(tooltipX, tooltipY, tooltipWidth - 1, tooltipHeight - 1);
+		graphics.setColor(TOOLTIP_BORDER);
+		graphics.drawRect(tooltipX + 1, tooltipY + 1, tooltipWidth - 3, tooltipHeight - 3);
+
+		// Draw item icon on the RIGHT side
+		if (icon != null)
+		{
+			int iconX = tooltipX + tooltipWidth - TOOLTIP_PADDING - ITEM_ICON_SIZE;
+			int iconY = tooltipY + TOOLTIP_PADDING;
+
+			graphics.setColor(new Color(30, 30, 30));
+			graphics.fillRect(iconX - 1, iconY - 1, ITEM_ICON_SIZE + 2, ITEM_ICON_SIZE + 2);
+			graphics.setColor(new Color(60, 60, 60));
+			graphics.drawRect(iconX - 1, iconY - 1, ITEM_ICON_SIZE + 1, ITEM_ICON_SIZE + 1);
+
+			int imgX = iconX + (ITEM_ICON_SIZE - icon.getWidth()) / 2;
+			int imgY = iconY + (ITEM_ICON_SIZE - icon.getHeight()) / 2;
+			graphics.drawImage(icon, imgX, imgY, null);
+		}
+
+		// Draw text lines
+		int textX = tooltipX + TOOLTIP_PADDING;
+		int textY = tooltipY + TOOLTIP_PADDING;
+
+		for (TooltipLine line : lines)
+		{
+			int xOffset = 0;
+			int textCenterY = textY + lineHeight / 2;
+			int baselineY = textCenterY + (fm.getAscent() - fm.getDescent()) / 2;
+
+			for (TooltipSegment seg : line.segments)
+			{
+				if (seg.iconName != null)
+				{
+					BufferedImage statIcon = getSprite(seg.iconName);
+					if (statIcon != null)
+					{
+						int iconY = textY + (lineHeight - STAT_ICON_SIZE) / 2;
+						graphics.drawImage(statIcon, textX + xOffset, iconY, null);
+						xOffset += STAT_ICON_SIZE + ICON_TEXT_GAP;
+					}
+				}
+				else if (seg.text != null)
+				{
+					graphics.setColor(seg.color);
+					graphics.drawString(seg.text, textX + xOffset, baselineY);
+					xOffset += fm.stringWidth(seg.text);
+				}
+			}
+			textY += lineHeight;
+		}
+	}
+
+	private int calculateLineWidth(TooltipLine line, FontMetrics fm)
+	{
+		int width = 0;
+		for (TooltipSegment seg : line.segments)
+		{
+			if (seg.iconName != null)
+			{
+				width += STAT_ICON_SIZE + ICON_TEXT_GAP;
+			}
+			else if (seg.text != null)
+			{
+				width += fm.stringWidth(seg.text);
+			}
+		}
+		return width;
+	}
+
 	private void clearTooltipCache()
 	{
 		cachedHoveredWidget = null;
 		cachedWidgetText = null;
 		cachedFoundItems = null;
-		cachedTooltipText = null;
+		cachedTooltips = null;
+		cachedIconX = -1;
+		cachedIconY = -1;
 	}
 
-	/**
-	 * Find the chat line widget the mouse is hovering over.
-	 * Optimized to check bounds FIRST before running expensive regex.
-	 */
 	private Widget findHoveredChatLine(Point mousePos)
 	{
 		int mx = mousePos.getX();
 		int my = mousePos.getY();
 
-		// Check chat line widgets (162, 58-149) - bounds first
+		Rectangle chatboxBounds = getChatboxVisibleBounds();
+		if (chatboxBounds != null && !chatboxBounds.contains(mx, my))
+		{
+			return null;
+		}
+
 		for (int lineId = 58; lineId < 150; lineId++)
 		{
 			Widget lineWidget = client.getWidget(162, lineId);
@@ -246,7 +488,6 @@ public class ItemLinkOverlay extends Overlay
 			if (found != null) return found;
 		}
 
-		// Try scroll area children (162, 57)
 		Widget scrollArea = client.getWidget(162, 57);
 		if (scrollArea != null && !scrollArea.isHidden())
 		{
@@ -254,7 +495,6 @@ public class ItemLinkOverlay extends Overlay
 			if (found != null) return found;
 		}
 
-		// Try chat display for transparent chatbox (162, 55)
 		Widget chatDisplay = client.getWidget(162, 55);
 		if (chatDisplay != null && !chatDisplay.isHidden())
 		{
@@ -265,10 +505,37 @@ public class ItemLinkOverlay extends Overlay
 		return null;
 	}
 
-	/**
-	 * Check if a widget contains an item link and mouse is over it.
-	 * Returns the widget if found, null otherwise.
-	 */
+	private Rectangle getChatboxVisibleBounds()
+	{
+		Widget scrollArea = client.getWidget(162, 57);
+		if (scrollArea != null && !scrollArea.isHidden())
+		{
+			Rectangle bounds = scrollArea.getBounds();
+			if (bounds != null)
+			{
+				return bounds;
+			}
+		}
+
+		Widget chatDisplay = client.getWidget(162, 55);
+		if (chatDisplay != null && !chatDisplay.isHidden())
+		{
+			Rectangle bounds = chatDisplay.getBounds();
+			if (bounds != null)
+			{
+				return bounds;
+			}
+		}
+
+		Widget chatbox = client.getWidget(162, 0);
+		if (chatbox != null && !chatbox.isHidden())
+		{
+			return chatbox.getBounds();
+		}
+
+		return null;
+	}
+
 	private Widget checkWidgetForItemLink(Widget widget, int mx, int my)
 	{
 		if (widget == null || widget.isHidden())
@@ -282,14 +549,12 @@ public class ItemLinkOverlay extends Overlay
 			return null;
 		}
 
-		// Mouse is over this widget - check if it has item links
 		String text = widget.getText();
-		if (text != null && text.contains("[") && COLORED_ITEM_PATTERN.matcher(text).find())
+		if (text != null && text.contains("<col=") && COLORED_ITEM_PATTERN.matcher(text).find())
 		{
 			return widget;
 		}
 
-		// Check dynamic children
 		Widget[] children = widget.getDynamicChildren();
 		if (children != null)
 		{
@@ -303,9 +568,6 @@ public class ItemLinkOverlay extends Overlay
 		return null;
 	}
 
-	/**
-	 * Check children of a container widget for item links.
-	 */
 	private Widget checkChildrenForItemLink(Widget parent, int mx, int my)
 	{
 		if (parent == null || parent.isHidden())
@@ -377,37 +639,18 @@ public class ItemLinkOverlay extends Overlay
 			info.equipmentStats = stats.getEquipment();
 		}
 
+		if (ItemLinkDataLoader.isLoaded())
+		{
+			ItemLinkDataLoader.WikiItem wikiItem = ItemLinkDataLoader.getItemById(itemId);
+			if (wikiItem != null)
+			{
+				info.examine = wikiItem.getExamine();
+				info.isMembers = wikiItem.isMembers();
+			}
+		}
+
 		recentItems.put(itemId, info);
 		itemsByName.put(itemName.toLowerCase(), info);
-	}
-
-	private String formatStat(String name, int value)
-	{
-		return formatStat(name, value, "");
-	}
-
-	private String formatStat(String name, int value, String suffix)
-	{
-		String color = value > 0 ? COLOR_VALUE_POSITIVE : (value < 0 ? COLOR_VALUE_NEGATIVE : COLOR_LABEL);
-		String sign = value > 0 ? "+" : "";
-		return "<col=" + COLOR_LABEL + ">" + name + ":</col> <col=" + color + ">" + sign + value + suffix + "</col></br>";
-	}
-
-	private boolean hasAttackBonuses(ItemEquipmentStats eq)
-	{
-		return eq.getAstab() != 0 || eq.getAslash() != 0 || eq.getAcrush() != 0 ||
-			   eq.getAmagic() != 0 || eq.getArange() != 0;
-	}
-
-	private boolean hasDefenceBonuses(ItemEquipmentStats eq)
-	{
-		return eq.getDstab() != 0 || eq.getDslash() != 0 || eq.getDcrush() != 0 ||
-			   eq.getDmagic() != 0 || eq.getDrange() != 0;
-	}
-
-	private boolean hasOtherBonuses(ItemEquipmentStats eq)
-	{
-		return eq.getStr() != 0 || eq.getRstr() != 0 || eq.getMdmg() != 0 || eq.getPrayer() != 0;
 	}
 
 	private String getSlotName(int slot)
@@ -447,23 +690,11 @@ public class ItemLinkOverlay extends Overlay
 		lastMouseY = -1;
 	}
 
-	private String buildTooltipText(List<ItemLinkInfo> items)
+	private List<TooltipLine> buildTooltipLinesForItem(ItemLinkInfo info)
 	{
-		StringBuilder tooltip = new StringBuilder();
-		boolean first = true;
-
-		for (ItemLinkInfo info : items)
-		{
-			if (!first)
-			{
-				tooltip.append("</br><col=").append(COLOR_SEPARATOR).append(">═════════════════════</col></br>");
-			}
-			first = false;
-
-			appendItemTooltip(tooltip, info);
-		}
-
-		return tooltip.toString();
+		List<TooltipLine> lines = new ArrayList<>();
+		appendItemTooltipLines(lines, info);
+		return lines;
 	}
 
 	private ItemLinkInfo copyWithQuantity(ItemLinkInfo original, int newQuantity)
@@ -477,128 +708,192 @@ public class ItemLinkOverlay extends Overlay
 		copy.haPrice = original.haPrice;
 		copy.weight = original.weight;
 		copy.isEquipable = original.isEquipable;
+		copy.isMembers = original.isMembers;
 		copy.geLimit = original.geLimit;
 		copy.equipmentStats = original.equipmentStats;
+		copy.examine = original.examine;
 		return copy;
 	}
 
-	private void appendItemTooltip(StringBuilder tooltip, ItemLinkInfo info)
+	private void appendItemTooltipLines(List<TooltipLine> lines, ItemLinkInfo info)
 	{
-		String rarityColor = getRarityColor(info.gePrice);
+		Color rarityColor = parseColor(getRarityColor(info.gePrice));
+		Color labelColor = parseColor(COLOR_LABEL);
+		Color valueColor = parseColor(COLOR_VALUE_NEUTRAL);
+		Color goldColor = parseColor(COLOR_GOLD);
+		Color examineColor = parseColor(COLOR_EXAMINE);
+		Color separatorColor = parseColor(COLOR_SEPARATOR);
+		Color positiveColor = parseColor(COLOR_VALUE_POSITIVE);
+		Color negativeColor = parseColor(COLOR_VALUE_NEGATIVE);
+		Color whiteColor = Color.WHITE;
 
-		// ITEM NAME
-		tooltip.append("<col=").append(rarityColor).append(">").append(info.name).append("</col>");
+		// ITEM NAME + MEMBERS/UNTRADEABLE INDICATORS
+		TooltipLine nameLine = new TooltipLine().add(info.name, rarityColor);
 		if (info.quantity > 1)
 		{
-			tooltip.append(" <col=").append(COLOR_LABEL).append(">x").append(QuantityFormatter.formatNumber(info.quantity)).append("</col>");
+			nameLine.add(" x" + QuantityFormatter.formatNumber(info.quantity), labelColor);
 		}
-		tooltip.append("</br>");
+		if (info.isMembers)
+		{
+			nameLine.add(" (P2P)", positiveColor);
+		}
+		// Show untradeable indicator if item has no GE price and no GE limit
+		if (info.gePrice <= 0 && info.geLimit <= 0)
+		{
+			nameLine.add(" (Untradeable)", negativeColor);
+		}
+		lines.add(nameLine);
+
+		// EXAMINE TEXT
+		if (info.examine != null && !info.examine.isEmpty())
+		{
+			lines.add(new TooltipLine().add("\"" + info.examine + "\"", examineColor));
+		}
 
 		// Separator
-		tooltip.append("<col=").append(COLOR_SEPARATOR).append(">─────────────────────</col></br>");
+		lines.add(new TooltipLine().add("â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€", separatorColor));
 
-		// PRICE INFORMATION
-		boolean hasPriceInfo = false;
-
+		// GE PRICE with limit
 		if (info.gePrice > 0)
 		{
-			hasPriceInfo = true;
 			long totalGe = (long) info.gePrice * info.quantity;
-			tooltip.append("<col=").append(COLOR_GOLD).append(">GE Price:</col> ");
-			tooltip.append("<col=").append(COLOR_VALUE_NEUTRAL).append(">");
-			tooltip.append(QuantityFormatter.quantityToStackSize(totalGe)).append(" gp");
+			TooltipLine geLine = new TooltipLine()
+				.add("GE: ", goldColor)
+				.add(QuantityFormatter.quantityToStackSize(totalGe) + " gp", valueColor);
 			if (info.quantity > 1)
 			{
-				tooltip.append(" (").append(QuantityFormatter.quantityToStackSize(info.gePrice)).append(" ea)");
+				geLine.add(" (" + QuantityFormatter.quantityToStackSize(info.gePrice) + " ea)", valueColor);
 			}
-			tooltip.append("</col></br>");
-
 			if (info.geLimit > 0)
 			{
-				tooltip.append("<col=").append(COLOR_LABEL).append(">Buy Limit:</col> ");
-				tooltip.append("<col=").append(COLOR_VALUE_NEUTRAL).append(">");
-				tooltip.append(QuantityFormatter.formatNumber(info.geLimit));
-				tooltip.append("</col></br>");
+				geLine.add("  Limit: ", labelColor)
+					  .add(QuantityFormatter.formatNumber(info.geLimit), valueColor);
 			}
+			lines.add(geLine);
 		}
 
+		// HIGH ALCH and LOW ALCH with icons
 		if (info.haPrice > 0)
 		{
-			hasPriceInfo = true;
 			long totalHa = (long) info.haPrice * info.quantity;
-			tooltip.append("<col=").append(COLOR_ALCH).append(">HA Value:</col> ");
-			tooltip.append("<col=").append(COLOR_VALUE_NEUTRAL).append(">");
-			tooltip.append(QuantityFormatter.quantityToStackSize(totalHa)).append(" gp");
-			if (info.quantity > 1)
-			{
-				tooltip.append(" (").append(QuantityFormatter.quantityToStackSize(info.haPrice)).append(" ea)");
-			}
-			tooltip.append("</col></br>");
+			int laPrice = (int) (info.haPrice * 2 / 3);
+			long totalLa = (long) laPrice * info.quantity;
+
+			TooltipLine alchLine = new TooltipLine()
+				.addIcon("high_alch")
+				.add(QuantityFormatter.quantityToStackSize(totalHa) + " gp", valueColor)
+				.add("   ", labelColor)
+				.addIcon("low_alch")
+				.add(QuantityFormatter.quantityToStackSize(totalLa) + " gp", valueColor);
+			lines.add(alchLine);
 		}
 
-		// EQUIPMENT STATS
+		// EQUIPMENT INFO
 		if (info.isEquipable && info.equipmentStats != null)
 		{
 			ItemEquipmentStats eq = info.equipmentStats;
 
-			if (hasPriceInfo)
-			{
-				tooltip.append("<col=").append(COLOR_SEPARATOR).append(">─────────────────────</col></br>");
-			}
-
+			// Slot and speed
 			String slotName = getSlotName(eq.getSlot());
-			tooltip.append("<col=").append(COLOR_LABEL).append(">Slot:</col> ");
-			tooltip.append("<col=ffffff>").append(slotName);
+			TooltipLine slotLine = new TooltipLine()
+				.add("Slot: ", labelColor)
+				.add(slotName, whiteColor);
 			if (eq.isTwoHanded())
 			{
-				tooltip.append(" (Two-handed)");
+				slotLine.add(" (2H)", whiteColor);
 			}
-			tooltip.append("</col></br>");
-
-			if (hasAttackBonuses(eq))
-			{
-				tooltip.append("<col=").append(COLOR_LABEL).append(">Attack Bonuses</col></br>");
-				if (eq.getAstab() != 0) tooltip.append(formatStat("  Stab", eq.getAstab()));
-				if (eq.getAslash() != 0) tooltip.append(formatStat("  Slash", eq.getAslash()));
-				if (eq.getAcrush() != 0) tooltip.append(formatStat("  Crush", eq.getAcrush()));
-				if (eq.getAmagic() != 0) tooltip.append(formatStat("  Magic", eq.getAmagic()));
-				if (eq.getArange() != 0) tooltip.append(formatStat("  Ranged", eq.getArange()));
-			}
-
-			if (hasDefenceBonuses(eq))
-			{
-				tooltip.append("<col=").append(COLOR_LABEL).append(">Defence Bonuses</col></br>");
-				if (eq.getDstab() != 0) tooltip.append(formatStat("  Stab", eq.getDstab()));
-				if (eq.getDslash() != 0) tooltip.append(formatStat("  Slash", eq.getDslash()));
-				if (eq.getDcrush() != 0) tooltip.append(formatStat("  Crush", eq.getDcrush()));
-				if (eq.getDmagic() != 0) tooltip.append(formatStat("  Magic", eq.getDmagic()));
-				if (eq.getDrange() != 0) tooltip.append(formatStat("  Ranged", eq.getDrange()));
-			}
-
-			if (hasOtherBonuses(eq))
-			{
-				tooltip.append("<col=").append(COLOR_LABEL).append(">Other Bonuses</col></br>");
-				if (eq.getStr() != 0) tooltip.append(formatStat("  Melee Str", eq.getStr()));
-				if (eq.getRstr() != 0) tooltip.append(formatStat("  Ranged Str", eq.getRstr()));
-				if (eq.getMdmg() != 0) tooltip.append(formatStat("  Magic Dmg", (int) eq.getMdmg(), "%"));
-				if (eq.getPrayer() != 0) tooltip.append(formatStat("  Prayer", eq.getPrayer()));
-			}
-
 			if (eq.getAspeed() > 0)
 			{
-				tooltip.append("<col=").append(COLOR_LABEL).append(">Attack Speed:</col> ");
-				tooltip.append("<col=ffffff>").append(eq.getAspeed()).append("</col></br>");
+				slotLine.add("  Speed: ", labelColor).add(String.valueOf(eq.getAspeed()), whiteColor);
+			}
+			lines.add(slotLine);
+
+			// Attack bonuses
+			if (eq.getAstab() != 0 || eq.getAslash() != 0 || eq.getAcrush() != 0 ||
+				eq.getAmagic() != 0 || eq.getArange() != 0)
+			{
+				lines.add(new TooltipLine().add("Atk: ", labelColor)
+					.addIcon("stab").add(formatBonus(eq.getAstab()) + " ", getBonusColor(eq.getAstab(), positiveColor, negativeColor, valueColor))
+					.addIcon("slash").add(formatBonus(eq.getAslash()) + " ", getBonusColor(eq.getAslash(), positiveColor, negativeColor, valueColor))
+					.addIcon("crush").add(formatBonus(eq.getAcrush()) + " ", getBonusColor(eq.getAcrush(), positiveColor, negativeColor, valueColor))
+					.addIcon("magic").add(formatBonus(eq.getAmagic()) + " ", getBonusColor(eq.getAmagic(), positiveColor, negativeColor, valueColor))
+					.addIcon("ranged").add(formatBonus(eq.getArange()), getBonusColor(eq.getArange(), positiveColor, negativeColor, valueColor)));
+			}
+
+			// Defence bonuses
+			if (eq.getDstab() != 0 || eq.getDslash() != 0 || eq.getDcrush() != 0 ||
+				eq.getDmagic() != 0 || eq.getDrange() != 0)
+			{
+				lines.add(new TooltipLine().add("Def: ", labelColor)
+					.addIcon("stab").add(formatBonus(eq.getDstab()) + " ", getBonusColor(eq.getDstab(), positiveColor, negativeColor, valueColor))
+					.addIcon("slash").add(formatBonus(eq.getDslash()) + " ", getBonusColor(eq.getDslash(), positiveColor, negativeColor, valueColor))
+					.addIcon("crush").add(formatBonus(eq.getDcrush()) + " ", getBonusColor(eq.getDcrush(), positiveColor, negativeColor, valueColor))
+					.addIcon("magic").add(formatBonus(eq.getDmagic()) + " ", getBonusColor(eq.getDmagic(), positiveColor, negativeColor, valueColor))
+					.addIcon("ranged").add(formatBonus(eq.getDrange()), getBonusColor(eq.getDrange(), positiveColor, negativeColor, valueColor)));
+			}
+
+			// Other bonuses
+			TooltipLine otherLine = new TooltipLine();
+			otherLine.add("Other: ", labelColor);
+			boolean hasOther = false;
+
+			if (eq.getStr() != 0)
+			{
+				otherLine.addIcon("strength").add(formatBonus(eq.getStr()) + " ", getBonusColor(eq.getStr(), positiveColor, negativeColor, valueColor));
+				hasOther = true;
+			}
+			if (eq.getRstr() != 0)
+			{
+				otherLine.addIcon("ranged").add(formatBonus(eq.getRstr()) + " ", getBonusColor(eq.getRstr(), positiveColor, negativeColor, valueColor));
+				hasOther = true;
+			}
+			if (eq.getMdmg() != 0)
+			{
+				otherLine.addIcon("magic").add(formatBonus((int) eq.getMdmg()) + "% ", getBonusColor((int) eq.getMdmg(), positiveColor, negativeColor, valueColor));
+				hasOther = true;
+			}
+			if (eq.getPrayer() != 0)
+			{
+				otherLine.addIcon("prayer").add(formatBonus(eq.getPrayer()), getBonusColor(eq.getPrayer(), positiveColor, negativeColor, valueColor));
+				hasOther = true;
+			}
+			if (hasOther)
+			{
+				lines.add(otherLine);
 			}
 		}
 
-		// WEIGHT
+		// WEIGHT with icon
 		if (info.weight != 0)
 		{
-			tooltip.append("<col=").append(COLOR_LABEL).append(">Weight:</col> ");
-			String weightColor = info.weight < 0 ? COLOR_VALUE_POSITIVE : (info.weight > 0 ? COLOR_VALUE_NEUTRAL : COLOR_LABEL);
-			tooltip.append("<col=").append(weightColor).append(">");
-			tooltip.append(String.format("%.2f kg", info.weight));
-			tooltip.append("</col>");
+			Color weightColor = info.weight < 0 ? positiveColor : valueColor;
+			lines.add(new TooltipLine()
+				.addIcon("weight")
+				.add(String.format("%.1f kg", info.weight), weightColor));
+		}
+	}
+
+	private String formatBonus(int value)
+	{
+		return value > 0 ? "+" + value : String.valueOf(value);
+	}
+
+	private Color getBonusColor(int value, Color positive, Color negative, Color neutral)
+	{
+		if (value > 0) return positive;
+		if (value < 0) return negative;
+		return neutral;
+	}
+
+	private Color parseColor(String hex)
+	{
+		try
+		{
+			return new Color(Integer.parseInt(hex, 16));
+		}
+		catch (Exception e)
+		{
+			return Color.WHITE;
 		}
 	}
 
@@ -611,8 +906,48 @@ public class ItemLinkOverlay extends Overlay
 		int haPrice;
 		long timestamp;
 		boolean isEquipable;
+		boolean isMembers;
 		double weight;
 		int geLimit;
 		ItemEquipmentStats equipmentStats;
+		String examine;
+	}
+
+	private static class TooltipLine
+	{
+		List<TooltipSegment> segments = new ArrayList<>();
+
+		TooltipLine add(String text, Color color)
+		{
+			segments.add(new TooltipSegment(text, color, null));
+			return this;
+		}
+
+		TooltipLine addIcon(String iconName)
+		{
+			segments.add(new TooltipSegment(null, null, iconName));
+			return this;
+		}
+	}
+
+	private static class TooltipSegment
+	{
+		String text;
+		Color color;
+		String iconName;
+
+		TooltipSegment(String text, Color color, String iconName)
+		{
+			this.text = text;
+			this.color = color;
+			this.iconName = iconName;
+		}
+	}
+
+	private static class CachedItemTooltip
+	{
+		BufferedImage icon;
+		List<TooltipLine> lines;
 	}
 }
+
