@@ -56,13 +56,10 @@ public class ItemLinkDataLoader
 	private static final long CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000L; // 7 days
 
 	private final Map<Integer, WikiItem> itemsById = new HashMap<>();
-	private final Gson gson = new Gson();
 	private boolean loaded = false;
 
 	@Inject
-	public ItemLinkDataLoader()
-	{
-	}
+	private Gson gson;
 
 	/**
 	 * Load item data from OSRS Wiki API (with local caching).
